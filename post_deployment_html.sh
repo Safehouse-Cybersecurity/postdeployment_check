@@ -1,25 +1,21 @@
 #!/bin/bash
 
 # ==============================================================================
-# POST-DEPLOYMENT VERIFICATIE SCRIPT V2 - ROCKY LINUX 9 (INCL. FIX-SUGGESTIES)
+# POST-DEPLOYMENT VERIFICATIE SCRIPT V3 - COMPLEET MET FIXES
 # ==============================================================================
 
-# Kleuren voor terminal output
+# Kleuren voor terminal
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# ------------------------------------------------------------------------------
-# INPUT VALIDATIE
-# ------------------------------------------------------------------------------
 if [ -z "$1" ]; then
     echo -e "${RED}[ERROR]${NC} Geen admin user opgegeven!"
     echo -e "${YELLOW}Gebruik:${NC} $0 <admin_gebruikersnaam>"
     exit 1
 fi
 
-# Configuratie
 ADMIN_USER="$1"
 GATEWAY_IP=$(ip route | grep default | awk '{print $3}' | head -n 1)
 TARGET_TIMEZONE="Europe/Amsterdam"
@@ -27,9 +23,7 @@ TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
 HOSTNAME_SHORT=$(hostname -s)
 HTML_REPORT="report_${HOSTNAME_SHORT}_${TIMESTAMP}.html"
 
-# ------------------------------------------------------------------------------
-# HTML INITIALISATIE
-# ------------------------------------------------------------------------------
+# --- HTML HEADER ---
 create_html_header() {
 cat <<EOF > "$HTML_REPORT"
 <!DOCTYPE html>
@@ -38,125 +32,108 @@ cat <<EOF > "$HTML_REPORT"
     <meta charset="UTF-8">
     <style>
         body { font-family: 'Segoe UI', sans-serif; margin: 30px; background-color: #f4f4f9; }
-        h1 { color: #2c3e50; }
         .meta { margin-bottom: 20px; padding: 15px; background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         table { border-collapse: collapse; width: 100%; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
         th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }
         th { background-color: #2c3e50; color: #fff; text-transform: uppercase; font-size: 0.85em; }
-        .status-pass { color: #27ae60; font-weight: bold; }
-        .status-fail { color: #c0392b; font-weight: bold; }
-        .fix-hint { font-size: 0.85em; color: #7f8c8d; font-style: italic; display: block; margin-top: 4px; }
-        .badge-pass { background: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; }
-        .badge-fail { background: #f8d7da; color: #721c24; padding: 4px 8px; border-radius: 4px; }
+        .badge-pass { background: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+        .badge-fail { background: #f8d7da; color: #721c24; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+        .fix-hint { font-size: 0.85em; color: #e67e22; font-style: italic; display: block; margin-top: 5px; }
     </style>
 </head>
 <body>
-    <h1>🚀 Deployment Verificatie: $HOSTNAME_SHORT</h1>
-    <div class="meta">
-        <strong>Status:</strong> Gecontroleerd voor admin <code>$ADMIN_USER</code> op $(date)
-    </div>
+    <h1>🚀 Deployment Rapport: $HOSTNAME_SHORT</h1>
+    <div class="meta"><strong>Server:</strong> $(hostname) | <strong>Admin:</strong> $ADMIN_USER | <strong>Datum:</strong> $(date)</div>
     <table>
-        <thead>
-            <tr>
-                <th>Categorie</th>
-                <th>Check Item</th>
-                <th>Status</th>
-                <th>Details & Oplossing</th>
-            </tr>
-        </thead>
+        <thead><tr><th>Categorie</th><th>Check</th><th>Status</th><th>Details & Oplossing</th></tr></thead>
         <tbody>
 EOF
 }
 
+# --- LOG FUNCTIE ---
 log_check() {
     local category=$1
-    local check_name=$2
+    local name=$2
     local status=$3
-    local message=$4
+    local msg=$4
     local fix=$5
-    
+
     if [ "$status" == "OK" ]; then
-        echo -e "${GREEN}[OK]${NC} $check_name"
-        STATUS_CELL="<span class='badge-pass'>PASS</span>"
-        FIX_HTML=""
+        echo -e "${GREEN}[OK]${NC} $category: $name"
+        STATUS_HTML="<span class='badge-pass'>PASS</span>"
+        DETAILS_HTML="$msg"
     else
-        echo -e "${RED}[FAIL]${NC} $check_name - $fix"
-        STATUS_CELL="<span class='badge-fail'>FAIL</span>"
-        FIX_HTML="<br><span class='fix-hint'><strong>Fix:</strong> $fix</span>"
+        echo -e "${RED}[FAIL]${NC} $category: $name"
+        STATUS_HTML="<span class='badge-fail'>FAIL</span>"
+        DETAILS_HTML="$msg <br><span class='fix-hint'><strong>Fix:</strong> $fix</span>"
     fi
 
-    echo "<tr>
-            <td>$category</td>
-            <td>$check_name</td>
-            <td>$STATUS_CELL</td>
-            <td>$message $FIX_HTML</td>
-          </tr>" >> "$HTML_REPORT"
+    echo "<tr><td>$category</td><td>$name</td><td>$STATUS_HTML</td><td>$DETAILS_HTML</td></tr>" >> "$HTML_REPORT"
 }
 
 create_html_header
 
-# --- START CHECKS ---
+# --- 1. SECURITY ---
+echo -e "\n--- Checking Security ---"
+[ "$(getenforce)" == "Enforcing" ] && log_check "Security" "SELinux" "OK" "Enforcing" "" || log_check "Security" "SELinux" "FAIL" "Status: $(getenforce)" "Voer uit: 'setenforce 1' en pas /etc/selinux/config aan."
 
-# SECURITY
-if [ "$(getenforce)" == "Enforcing" ]; then
-    log_check "Security" "SELinux" "OK" "Enforcing" ""
-else
-    log_check "Security" "SELinux" "FAIL" "Status: $(getenforce)" "Voer uit: 'setenforce 1' en pas /etc/selinux/config aan naar 'enforcing'."
-fi
+systemctl is-active --quiet firewalld && log_check "Security" "Firewall" "OK" "Actief" "" || log_check "Security" "Firewall" "FAIL" "Niet actief" "Voer uit: 'systemctl enable --now firewalld'."
 
-if systemctl is-active --quiet firewalld; then
-    log_check "Security" "Firewall" "OK" "Actief" ""
-else
-    log_check "Security" "Firewall" "FAIL" "Inactief" "Voer uit: 'systemctl enable --now firewalld'."
-fi
+ROOT_PASS=$(chage -l root | grep "Last password change" | cut -d: -f2)
+log_check "Security" "Root Password" "OK" "Laatste wijziging: $ROOT_PASS" ""
 
 if id "$ADMIN_USER" &>/dev/null; then
-    log_check "Security" "Admin User" "OK" "Gebruiker $ADMIN_USER gevonden" ""
+    ADMIN_PASS=$(chage -l "$ADMIN_USER" | grep "Last password change" | cut -d: -f2)
+    log_check "Security" "$ADMIN_USER Password" "OK" "Gewijzigd op: $ADMIN_PASS" ""
 else
-    log_check "Security" "Admin User" "FAIL" "Niet gevonden" "Maak de gebruiker aan: 'useradd $ADMIN_USER'."
+    log_check "Security" "$ADMIN_USER Password" "FAIL" "User niet gevonden" "Voer uit: 'useradd $ADMIN_USER'."
 fi
 
-if sudo -l -U "$ADMIN_USER" | grep -qE "\(ALL(:ALL)?\) ALL"; then
-    log_check "Security" "Sudo Rights" "OK" "Correct" ""
+sudo -l -U "$ADMIN_USER" | grep -qE "\(ALL(:ALL)?\) ALL" && log_check "Security" "Sudo Rights" "OK" "Correct" "" || log_check "Security" "Sudo Rights" "FAIL" "Geen rechten" "Voer uit: 'usermod -aG wheel $ADMIN_USER'."
+
+if systemctl is-active --quiet sophos-spl; then
+    log_check "Security" "Sophos MDR" "OK" "Draait" ""
+elif systemctl is-active --quiet sav-protect; then
+    log_check "Security" "Sophos MDR" "FAIL" "Oude SAV draait" "Migreer naar Sophos SPL/MDR."
 else
-    log_check "Security" "Sudo Rights" "FAIL" "Ontbreken" "Voeg de gebruiker toe aan de 'wheel' groep: 'usermod -aG wheel $ADMIN_USER'."
+    log_check "Security" "Sophos MDR" "FAIL" "Niet actief" "Installeer of start de Sophos agent."
 fi
 
-# NETWORK
-if [[ "$(hostnamectl --static)" =~ ^it2.* ]]; then
-    log_check "Network" "Hostname" "OK" "$(hostnamectl --static)" ""
+# --- 2. NETWORK ---
+echo -e "\n--- Checking Network ---"
+[[ "$(hostnamectl --static)" =~ ^it2.* ]] && log_check "Network" "Hostname" "OK" "$(hostname)" "" || log_check "Network" "Hostname" "FAIL" "$(hostname)" "Wijzig naar it2[naam] via 'hostnamectl set-hostname'."
+
+PRIM_CONN=$(nmcli -t -f NAME connection show --active | head -n1)
+IP_METHOD=$(nmcli -f ipv4.method connection show "$PRIM_CONN" | awk '{print $2}')
+[ "$IP_METHOD" == "manual" ] && log_check "Network" "Static IP" "OK" "Manual" "" || log_check "Network" "Static IP" "FAIL" "Staat op $IP_METHOD" "Stel statisch IP in via 'nmtui'."
+
+if [ -n "$GATEWAY_IP" ]; then
+    ping -c 2 -q "$GATEWAY_IP" &>/dev/null && log_check "Network" "Gateway" "OK" "Ping $GATEWAY_IP OK" "" || log_check "Network" "Gateway" "FAIL" "Geen ping" "Check netwerkverbinding/gateway adres."
 else
-    log_check "Network" "Hostname" "FAIL" "Fout formaat" "Wijzig hostname: 'hostnamectl set-hostname it2[naam]'."
+    log_check "Network" "Gateway" "FAIL" "Geen GW gevonden" "Check IP configuratie."
 fi
 
-IP_METHOD=$(nmcli -t -f ipv4.method connection show "$(nmcli -t -f NAME connection show --active | head -n1)" 2>/dev/null)
-if [ "$IP_METHOD" == "manual" ]; then
-    log_check "Network" "Static IP" "OK" "Handmatig ingesteld" ""
-else
-    log_check "Network" "Static IP" "FAIL" "DHCP actief" "Configureer een statisch IP via 'nmtui' of nmcli."
-fi
+ping -c 2 -q 8.8.8.8 &>/dev/null && log_check "Network" "Internet" "OK" "8.8.8.8 bereikbaar" "" || log_check "Network" "Internet" "FAIL" "Geen internet" "Check gateway/NAT."
 
-# SYSTEM
+nslookup google.com &>/dev/null && log_check "Network" "DNS Resolutie" "OK" "google.com OK" "" || log_check "Network" "DNS Resolutie" "FAIL" "DNS fail" "Check /etc/resolv.conf."
+
+HOST_IP=$(hostname -I | awk '{print $1}')
+nslookup "$(hostname)" &>/dev/null && log_check "Network" "DNS Forward" "OK" "Resolved" "" || log_check "Network" "DNS Forward" "FAIL" "Niet gevonden" "Voeg A-record toe in DNS."
+nslookup "$HOST_IP" &>/dev/null && log_check "Network" "DNS Reverse" "OK" "Resolved" "" || log_check "Network" "DNS Reverse" "FAIL" "Niet gevonden" "Voeg PTR-record toe in DNS."
+
+# --- 3. SYSTEM ---
+echo -e "\n--- Checking System ---"
+dnf check-update &>/dev/null
+[ $? -eq 0 ] && log_check "System" "Updates" "OK" "Up-to-date" "" || log_check "System" "Updates" "FAIL" "Updates beschikbaar" "Voer 'dnf update -y' uit."
+
 TZ=$(timedatectl show -p Timezone --value)
-if [ "$TZ" == "$TARGET_TIMEZONE" ]; then
-    log_check "System" "Timezone" "OK" "$TZ" ""
-else
-    log_check "System" "Timezone" "FAIL" "$TZ" "Voer uit: 'timedatectl set-timezone $TARGET_TIMEZONE'."
-fi
+[ "$TZ" == "$TARGET_TIMEZONE" ] && log_check "System" "Timezone" "OK" "$TZ" "" || log_check "System" "Timezone" "FAIL" "$TZ" "Voer uit: 'timedatectl set-timezone $TARGET_TIMEZONE'."
+
+timedatectl show -p NTPSynchronized --value | grep -q "yes" && log_check "System" "NTP Sync" "OK" "Gesynchroniseerd" "" || log_check "System" "NTP Sync" "FAIL" "Niet sync" "Check chronyd service."
 
 ROOT_USE=$(df / --output=pcent | tail -1 | tr -dc '0-9')
-if [ "$ROOT_USE" -lt 90 ]; then
-    log_check "System" "Disk Space" "OK" "${ROOT_USE}% gebruikt" ""
-else
-    log_check "System" "Disk Space" "FAIL" "${ROOT_USE}% gebruikt" "Schoon logs op of breid de disk/LVM uit."
-fi
+[ "$ROOT_USE" -lt 90 ] && log_check "System" "Disk Usage" "OK" "${ROOT_USE}%" "" || log_check "System" "Disk Usage" "FAIL" "${ROOT_USE}%" "Vergroot disk of schoon bestanden op."
 
-# AFSLUITEN
-cat <<EOF >> "$HTML_REPORT"
-        </tbody>
-    </table>
-</body>
-</html>
-EOF
-
-echo -e "\n${GREEN}Check voltooid.${NC} Rapport: $HTML_REPORT"
+# --- CLOSE ---
+echo "</tbody></table></body></html>" >> "$HTML_REPORT"
+echo -e "\n${GREEN}Klaar! Rapport:${NC} $HTML_REPORT"
