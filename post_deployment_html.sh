@@ -10,8 +10,17 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# ------------------------------------------------------------------------------
+# INPUT VALIDATIE
+# ------------------------------------------------------------------------------
+if [ -z "$1" ]; then
+    echo -e "${RED}[ERROR]${NC} Geen admin user opgegeven!"
+    echo -e "${YELLOW}Gebruik:${NC} $0 <admin_gebruikersnaam>"
+    exit 1
+fi
+
 # Configuratie
-ADMIN_USER="it2gadmin"
+ADMIN_USER="$1"
 GATEWAY_IP=$(ip route | grep default | awk '{print $3}' | head -n 1)
 TARGET_TIMEZONE="Europe/Amsterdam"
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
@@ -46,7 +55,8 @@ cat <<EOF > "$HTML_REPORT"
     <div class="meta">
         <strong>Server:</strong> $(hostname)<br>
         <strong>Datum:</strong> $(date)<br>
-        <strong>Uitgevoerd door:</strong> $(whoami)
+        <strong>Uitgevoerd door:</strong> $(whoami)<br>
+        <strong>Gecontroleerde Admin User:</strong> $ADMIN_USER
     </div>
     <table>
         <thead>
@@ -96,7 +106,8 @@ log_check() {
 create_html_header
 
 echo "========================================================"
-echo "START POST-DEPLOYMENT CHECKS -> $HTML_REPORT"
+echo "START POST-DEPLOYMENT CHECKS VOOR GEBRUIKER: $ADMIN_USER"
+echo "RAPPORT: $HTML_REPORT"
 echo "========================================================"
 
 # --- BEVEILIGING ---
@@ -120,19 +131,19 @@ fi
 LAST_CHANGE_ROOT=$(chage -l root | grep "Last password change" | cut -d: -f2)
 log_check "Security" "Root Password" "OK" "Laatste wijziging: $LAST_CHANGE_ROOT"
 
-# it2gadmin Wachtwoord
+# Dynamische Admin User Wachtwoord Check
 if id "$ADMIN_USER" &>/dev/null; then
-    LAST_CHANGE_ADMIN=$(chage -l $ADMIN_USER | grep "Last password change" | cut -d: -f2)
+    LAST_CHANGE_ADMIN=$(chage -l "$ADMIN_USER" | grep "Last password change" | cut -d: -f2)
     log_check "Security" "$ADMIN_USER Password" "OK" "Gebruiker aanwezig. Gewijzigd: $LAST_CHANGE_ADMIN"
 else
     log_check "Security" "$ADMIN_USER Password" "FAIL" "Gebruiker $ADMIN_USER bestaat niet"
 fi
 
 # Sudo Rechten
-if sudo -l -U "$ADMIN_USER" | grep -q "(ALL) ALL" || sudo -l -U "$ADMIN_USER" | grep -q "(ALL : ALL) ALL"; then
+if sudo -l -U "$ADMIN_USER" | grep -qE "\(ALL(:ALL)?\) ALL"; then
     log_check "Security" "Sudo Rights" "OK" "$ADMIN_USER heeft ALL rechten"
 else
-    log_check "Security" "Sudo Rights" "FAIL" "Geen volledige sudo rechten gevonden"
+    log_check "Security" "Sudo Rights" "FAIL" "Geen volledige sudo rechten gevonden voor $ADMIN_USER"
 fi
 
 # Sophos MDR
