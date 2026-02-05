@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# POST-DEPLOYMENT VERIFICATIE DASHBOARD V5 - DETAILED TERMINAL + MODERN HTML
+# POST-DEPLOYMENT VERIFICATIE DASHBOARD V6 - EXACT TERMINAL MATCH
 # ==============================================================================
 
 # Kleuren voor terminal
@@ -84,32 +84,36 @@ cat <<EOF > "$HTML_REPORT"
 EOF
 }
 
-# --- HERSTELDE LOG FUNCTIE (Screenshot 1 stijl) ---
+# --- LOG FUNCTIE (Exacte match met image_dda429.png) ---
 log_check() {
     local category=$1; local name=$2; local status=$3; local msg=$4; local fix=$5
     ((TOTAL_CHECKS++))
     
     if [ "$status" == "OK" ]; then
         ((PASSED_CHECKS++))
-        # Exacte terminal output zoals gevraagd
         echo -e "${GREEN}[OK]${NC} $category: $name - $msg"
         HTML_S="<span class='badge badge-pass'>PASS</span>"
-        HTML_D="fail" # data attribute
+        S_DATA="pass"
         FIX_UI=""
     else
         ((FAILED_CHECKS++))
         echo -e "${RED}[FAIL]${NC} $category: $name - $msg"
         HTML_S="<span class='badge badge-fail'>FAIL</span>"
-        HTML_D="fail"
+        S_DATA="fail"
         FIX_UI="<div class='fix-container'><code style='color:#92400e'>$fix</code><button class='copy-btn' onclick=\"copyTo('$fix')\">Copy</button></div>"
     fi
 
-    echo "<tr data-status='$([ "$status" == "OK" ] && echo "pass" || echo "fail")'>
+    echo "<tr data-status='$S_DATA'>
             <td>$category</td><td>$name</td><td>$HTML_S</td><td>$msg $FIX_UI</td>
           </tr>" >> "$HTML_REPORT"
 }
 
 create_html_header
+
+echo "========================================================"
+echo "START POST-DEPLOYMENT CHECKS VOOR GEBRUIKER: $ADMIN_USER"
+echo "RAPPORT: $HTML_REPORT"
+echo "========================================================"
 
 # --- 1. SECURITY ---
 echo -e "\n--- Checking Security ---"
@@ -122,41 +126,41 @@ if id "$ADMIN_USER" &>/dev/null; then
     log_check "Security" "$ADMIN_USER Password" "OK" "Gebruiker aanwezig. Gewijzigd: $ADMIN_CH" ""
     log_check "Security" "Sudo Rights" "$(sudo -l -U "$ADMIN_USER" | grep -qE "\(ALL(:ALL)?\) ALL" && echo "OK" || echo "FAIL")" "$ADMIN_USER heeft ALL rechten" "usermod -aG wheel $ADMIN_USER"
 else
-    log_check "Security" "$ADMIN_USER" "FAIL" "Gebruiker niet gevonden" "useradd $ADMIN_USER"
+    log_check "Security" "$ADMIN_USER Password" "FAIL" "Gebruiker niet gevonden" "useradd $ADMIN_USER"
 fi
 
 if systemctl is-active --quiet sophos-spl; then
     log_check "Security" "Sophos MDR" "OK" "sophos-spl service actief" ""
 else
-    log_check "Security" "Sophos MDR" "FAIL" "sophos-spl service niet actief" "Installeer Sophos MDR agent"
+    log_check "Security" "Sophos MDR" "FAIL" "sophos-spl service niet actief" "sudo /opt/sophos-spl/bin/sophos-management-agent --version"
 fi
 
 # --- 2. NETWORK ---
 echo -e "\n--- Checking Network ---"
 CUR_H=$(hostnamectl --static)
-[[ "$CUR_H" =~ ^it2.* ]] && log_check "Network" "Hostname" "OK" "$CUR_H (Correct format)" "" || log_check "Network" "Hostname" "FAIL" "$CUR_H (Format incorrect)" "hostnamectl set-hostname it2-server"
+[[ "$CUR_H" =~ ^it2.* ]] && log_check "Network" "Hostname" "OK" "$CUR_H (Correct format)" "" || log_check "Network" "Hostname" "FAIL" "$CUR_H (Format incorrect)" "hostnamectl set-hostname it2-$(hostname)"
 
 PRIM_CONN=$(nmcli -t -f NAME connection show --active | head -n1)
 IP_M=$(nmcli -f ipv4.method connection show "$PRIM_CONN" | awk '{print $2}')
 [ "$IP_M" == "manual" ] && log_check "Network" "Static IP" "OK" "Interface op manual" "" || log_check "Network" "Static IP" "FAIL" "Interface op $IP_M" "nmtui"
 
 if [ -n "$GATEWAY_IP" ]; then
-    ping -c 2 -q "$GATEWAY_IP" &>/dev/null && log_check "Network" "Gateway Ping" "OK" "Ping $GATEWAY_IP OK" "" || log_check "Network" "Gateway Ping" "FAIL" "Ping fail" "Check gateway"
+    ping -c 2 -q "$GATEWAY_IP" &>/dev/null && log_check "Network" "Gateway Ping" "OK" "Ping $GATEWAY_IP OK" "" || log_check "Network" "Gateway Ping" "FAIL" "Ping fail op $GATEWAY_IP" "ip route add default via [gateway_ip]"
 else
-    log_check "Network" "Gateway Ping" "FAIL" "Geen GW gevonden" ""
+    log_check "Network" "Gateway Ping" "FAIL" "Geen GW gevonden" "nmcli con mod $PRIM_CONN ipv4.gateway [gateway_ip]"
 fi
 
-ping -c 2 -q 8.8.8.8 &>/dev/null && log_check "Network" "Internet Ping" "OK" "Connectie met 8.8.8.8 OK" "" || log_check "Network" "Internet Ping" "FAIL" "Geen internet" ""
-ping -c 2 -q google.com &>/dev/null && log_check "Network" "DNS Resolutie" "OK" "google.com resolved" "" || log_check "Network" "DNS Resolutie" "FAIL" "Fail" ""
-nslookup "$(hostname)" &>/dev/null && log_check "Network" "DNS Forward" "OK" "Hostname lookup OK" "" || log_check "Network" "DNS Forward" "FAIL" "Hostname lookup fail" ""
-nslookup "$(hostname -I | awk '{print $1}')" &>/dev/null && log_check "Network" "DNS Reverse" "OK" "Reverse lookup OK" "" || log_check "Network" "DNS Reverse" "FAIL" "Reverse lookup fail" ""
+ping -c 2 -q 8.8.8.8 &>/dev/null && log_check "Network" "Internet Ping" "OK" "Connectie met 8.8.8.8 OK" "" || log_check "Network" "Internet Ping" "FAIL" "Geen internet" "check firewall rules"
+ping -c 2 -q google.com &>/dev/null && log_check "Network" "DNS Resolutie" "OK" "google.com resolved" "" || log_check "Network" "DNS Resolutie" "FAIL" "Resolutie mislukt" "vi /etc/resolv.conf"
+nslookup "$(hostname)" &>/dev/null && log_check "Network" "DNS Forward" "OK" "Hostname lookup OK" "" || log_check "Network" "DNS Forward" "FAIL" "Hostname lookup fail" "Add A-record in DNS"
+nslookup "$(hostname -I | awk '{print $1}')" &>/dev/null && log_check "Network" "DNS Reverse" "OK" "Reverse lookup OK" "" || log_check "Network" "DNS Reverse" "FAIL" "Reverse lookup fail" "Add PTR-record in DNS"
 
 # --- 3. SYSTEM ---
 echo -e "\n--- Checking System ---"
 dnf check-update &>/dev/null && log_check "System" "Updates" "OK" "Systeem up-to-date" "" || log_check "System" "Updates" "FAIL" "Updates beschikbaar" "dnf update -y"
 log_check "System" "Repositories" "OK" "Standaard repos actief" ""
 log_check "System" "Timezone" "OK" "$(timedatectl show -p Timezone --value)" ""
-timedatectl show -p NTPSynchronized --value | grep -q "yes" && log_check "System" "NTP Sync" "OK" "Gesynchroniseerd" "" || log_check "System" "NTP Sync" "FAIL" "Niet sync" "systemctl restart chronyd"
+timedatectl show -p NTPSynchronized --value | grep -q "yes" && log_check "System" "NTP Sync" "OK" "Gesynchroniseerd" "" || log_check "System" "NTP Sync" "FAIL" "Niet gesynchroniseerd" "systemctl restart chronyd"
 log_check "System" "Locale" "OK" "$(localectl status | grep 'LANG' | cut -d= -f2)" ""
 log_check "System" "Disk Usage" "OK" "Root gebruik: $(df / --output=pcent | tail -1 | tr -dc '0-9')%" ""
 
@@ -174,4 +178,4 @@ cat <<EOF >> "$HTML_REPORT"
 </html>
 EOF
 
-echo -e "\n${GREEN}Klaar! Dashboard:${NC} $HTML_REPORT"
+echo -e "\n${GREEN}Klaar! Dashboard gegenereerd:${NC} $HTML_REPORT"
