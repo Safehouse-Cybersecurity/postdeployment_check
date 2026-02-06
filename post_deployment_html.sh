@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# POST-DEPLOYMENT VERIFICATIE DASHBOARD V28 - 5-BOX SPLIT & QEMU AGENT
+# POST-DEPLOYMENT VERIFICATIE DASHBOARD V29 - ALL DISKS AUDIT & 5-BOX UI
 # ==============================================================================
 
 # Kleuren voor terminal
@@ -79,14 +79,12 @@ AUDIT_FIX="echo '-w /etc/passwd -p wa -k identity' | sudo tee -a /etc/audit/rule
 log_check "CIS" "Audit Rules" "$(echo "$RAW_AUDIT" | grep -q "identity" && echo "OK" || echo "FAIL")" "Rules check" "$AUDIT_FIX" "$RAW_AUDIT"
 log_check "CIS" "Perms /etc/shadow" "$([ "$(stat -c "%a" /etc/shadow 2>/dev/null)" == "0" ] && echo "OK" || echo "FAIL")" "Status: $(stat -c "%a" /etc/shadow 2>/dev/null)" "sudo chmod 000 /etc/shadow" "$(ls -l /etc/shadow)"
 
-# --- 2. SECURITY & AGENTS (Inclusief Qemu check) ---
+# --- 2. SECURITY & AGENTS ---
 echo -e "\n--- Checking Security & Mandatory Agents ---"
 log_check "Security" "SELinux Status" "$([ "$(getenforce 2>/dev/null)" == "Enforcing" ] && echo "OK" || echo "FAIL")" "Is $(getenforce 2>/dev/null)" "sudo setenforce 1 && sudo sed -i 's/SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config" "$(sestatus 2>/dev/null)"
 log_check "Security" "Firewall" "$(systemctl is-active --quiet firewalld && echo "OK" || echo "FAIL")" "Service active" "sudo systemctl enable --now firewalld" "$(systemctl status firewalld --no-pager)"
 log_check "Security" "Sophos MDR" "$(systemctl is-active --quiet sophos-spl && echo "OK" || echo "FAIL")" "Service status" "sudo systemctl start sophos-spl" "$(systemctl status sophos-spl --no-pager 2>&1)"
 log_check "Security" "Azure Arc" "$(azcmagent show 2>&1 | grep -iq "Connected" && echo "OK" || echo "FAIL")" "Verbonden" "sudo azcmagent connect" "$(azcmagent show 2>&1)"
-
-# Qemu Guest Agent (Nieuw in deze sectie)
 if systemctl list-unit-files | grep -q qemu-guest-agent; then
     log_check "Security" "Qemu Agent" "$(systemctl is-active --quiet qemu-guest-agent && echo "OK" || echo "FAIL")" "Status" "sudo systemctl enable --now qemu-guest-agent" "$(systemctl status qemu-guest-agent --no-pager)"
 else
@@ -96,12 +94,16 @@ fi
 # --- 3. NETWORK CONNECTIVITY ---
 echo -e "\n--- Checking Network Connectivity ---"
 log_check "Network" "Hostname" "$([[ "$(hostnamectl --static)" =~ ^it2.* ]] && echo "OK" || echo "FAIL")" "$(hostname)" "sudo hostnamectl set-hostname it2-$(hostname)" "$(hostnamectl)"
-RAW_RES=$(nslookup google.com 2>&1)
-log_check "Network" "DNS Res" "$(echo "$RAW_RES" | grep -q "Address" && echo "OK" || echo "FAIL")" "$([ $? -eq 0 ] && echo "Resolved" || echo "Resolution failed")" "" "$RAW_RES"
-RAW_FWD=$(nslookup "$(hostname)" 2>&1)
-log_check "Network" "DNS Fwd" "$(echo "$RAW_FWD" | grep -q "Address" && echo "OK" || echo "FAIL")" "$([ $? -eq 0 ] && echo "Forward lookup OK" || echo "Forward lookup failed")" "" "$RAW_FWD"
-RAW_REV=$(nslookup "$IP_ADDR" 2>&1)
-log_check "Network" "DNS Rev" "$(echo "$RAW_REV" | grep -q "name =" && echo "OK" || echo "FAIL")" "$([ $? -eq 0 ] && echo "Reverse lookup OK" || echo "Reverse lookup failed")" "" "$RAW_REV"
+# Dynamic DNS checks
+for check in "google.com:Address:DNS Res" "$(hostname):Address:DNS Fwd" "$IP_ADDR:name =:DNS Rev"; do
+    IFS=: read -r target pattern label <<< "$check"
+    RAW_NS=$(nslookup "$target" 2>&1)
+    if echo "$RAW_NS" | grep -q "$pattern"; then
+        log_check "Network" "$label" "OK" "${label//DNS /} OK" "" "$RAW_NS"
+    else
+        log_check "Network" "$label" "FAIL" "${label//DNS /} failed" "" "$RAW_NS"
+    fi
+done
 
 # --- 4. SYSTEM MANAGEMENT ---
 echo -e "\n--- Checking System Management ---"
@@ -112,7 +114,13 @@ else
 fi
 log_check "System" "Timezone" "OK" "$(timedatectl show -p Timezone --value 2>/dev/null)" "" "$(timedatectl)"
 log_check "System" "NTP Sync" "$(timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q 'yes' && echo "OK" || echo "FAIL")" "Synced" "sudo systemctl restart chronyd" "$(timedatectl)"
-log_check "System" "Disk Usage" "$([ "$(df / --output=pcent | tail -1 | tr -dc '0-9')" -lt 90 ] && echo "OK" || echo "FAIL")" "Root: $(df / --output=pcent | tail -1 | xargs)%" "" "$(df -h /)"
+
+# ALL DISK USAGE CHECK (NIEUW)
+while read -r line; do
+    MP=$(echo "$line" | awk '{print $6}')
+    USE=$(echo "$line" | awk '{print $5}' | tr -d '%')
+    log_check "System" "Disk: $MP" "$([ "$USE" -lt 90 ] && echo "OK" || echo "FAIL")" "Usage: ${USE}%" "" "$(df -h "$MP")"
+done < <(df -h | grep -vE '^Filesystem|tmpfs|cdrom|devtmpfs')
 
 # --- 5. PARTITION HARDENING ---
 echo -e "\n--- Checking Partition Hardening ---"
@@ -157,7 +165,6 @@ cat <<EOF > "$HTML_REPORT"
         .badge-pass { background: #dcfce7; color: #166534; }
         .badge-fail { background: #fee2e2; color: #991b1b; }
         .raw-output { background: #0f172a; color: #e2e8f0; padding: 15px; border-radius: 8px; font-family: monospace; white-space: pre-wrap; font-size: 0.8em; }
-        .fix-container { background: #fffbeb; padding: 10px; border-radius: 6px; border: 1px solid #fef3c7; display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }
         .copy-btn { background: #f59e0b; color: white; border: none; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
     </style>
 </head>
@@ -207,4 +214,4 @@ cat <<EOF > "$HTML_REPORT"
 </html>
 EOF
 
-echo -e "\n${GREEN}Gereed! Rapport V28 gegenereerd:${NC} $HTML_REPORT"
+echo -e "\n${GREEN}Gereed! Rapport V29 gegenereerd:${NC} $HTML_REPORT"
