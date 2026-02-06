@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# POST-DEPLOYMENT VERIFICATIE DASHBOARD V25 - REDIRECTION FIX & 4-BOX UI
+# POST-DEPLOYMENT VERIFICATIE DASHBOARD V26 - DYNAMIC DNS DETAILS & 4-BOX UI
 # ==============================================================================
 
 # Kleuren voor terminal
@@ -28,12 +28,12 @@ TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
 HOSTNAME_SHORT=$(hostname -s)
 HTML_REPORT="report_${HOSTNAME_SHORT}_${TIMESTAMP}.html"
 
-# Variabelen voor HTML (4 aparte secties behouden conform image_84d9a1.png)
+# Variabelen voor HTML
 CIS_HTML=""; SEC_HTML=""; NET_HTML=""; SYS_HTML=""; TODO_HTML=""; EVIDENCE_HTML=""; ONELINER_CMDS=""
 TOTAL_CHECKS=0; PASSED_CHECKS=0; FAILED_CHECKS=0
 SEC_P=0; SEC_T=0; NET_P=0; NET_T=0; SYS_P=0; SYS_T=0; CIS_P=0; CIS_T=0
 
-# --- LOG FUNCTIE (Terminal detail + Oneliner fix) ---
+# --- LOG FUNCTIE ---
 log_check() {
     local category=$1; local name=$2; local status=$3; local msg=$4; local fix=$5; local raw_out=$6
     ((TOTAL_CHECKS++))
@@ -70,11 +70,9 @@ echo -e "========================================================\nSTART AUDIT: 
 # --- 1. CIS COMPLIANCE ---
 echo -e "\n--- Running CIS Compliance Audit ---"
 SSH_ROOT=$(sshd -T 2>/dev/null | grep -i "permitrootlogin" | awk '{print $2}')
-log_check "CIS" "SSH Root Login" "$([ "$SSH_ROOT" == "no" ] && echo "OK" || echo "FAIL")" "Status: $SSH_ROOT" "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && sudo systemctl restart sshd" "$(sshd -T 2>/dev/null | grep -i permitroot)"
-
-# De audit rules fix gebruikt nu tee om permission denied te voorkomen
+log_check "CIS" "SSH Root Login" "$([ "$SSH_ROOT" == "no" ] && echo "OK" || echo "FAIL")" "Root login: $SSH_ROOT" "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && sudo systemctl restart sshd" "$(sshd -T 2>/dev/null | grep -i permitroot)"
 RAW_AUDIT=$(auditctl -l 2>/dev/null)
-AUDIT_FIX="echo '-w /etc/passwd -p wa -k identity' | sudo tee -a /etc/audit/rules.d/audit.rules > /dev/null && echo '-w /etc/shadow -p wa -k identity' | sudo tee -a /etc/audit/rules.d/audit.rules > /dev/null && sudo augenrules --load"
+AUDIT_FIX="echo '-w /etc/passwd -p wa -k identity' | sudo tee -a /etc/audit/rules.d/audit.rules > /dev/null && sudo augenrules --load"
 log_check "CIS" "Audit Rules" "$(echo "$RAW_AUDIT" | grep -q "identity" && echo "OK" || echo "FAIL")" "Rules check" "$AUDIT_FIX" "$RAW_AUDIT"
 log_check "CIS" "Perms /etc/shadow" "$([ "$(stat -c "%a" /etc/shadow 2>/dev/null)" == "0" ] && echo "OK" || echo "FAIL")" "Status: $(stat -c "%a" /etc/shadow 2>/dev/null)" "sudo chmod 000 /etc/shadow" "$(ls -l /etc/shadow)"
 
@@ -85,12 +83,33 @@ log_check "Security" "Firewall" "$(systemctl is-active --quiet firewalld && echo
 log_check "Security" "Sophos MDR" "$(systemctl is-active --quiet sophos-spl && echo "OK" || echo "FAIL")" "Service status" "sudo systemctl start sophos-spl" "$(systemctl status sophos-spl --no-pager 2>&1)"
 log_check "Security" "Azure Arc" "$(azcmagent show 2>&1 | grep -iq "Connected" && echo "OK" || echo "FAIL")" "Verbonden" "sudo azcmagent connect" "$(azcmagent show 2>&1)"
 
-# --- 3. NETWORK CONNECTIVITY ---
+# --- 3. NETWORK CONNECTIVITY (Dynamic DNS Details) ---
 echo -e "\n--- Checking Network Connectivity ---"
 log_check "Network" "Hostname" "$([[ "$(hostnamectl --static)" =~ ^it2.* ]] && echo "OK" || echo "FAIL")" "$(hostname)" "sudo hostnamectl set-hostname it2-$(hostname)" "$(hostnamectl)"
-log_check "Network" "DNS Res" "$(nslookup google.com &>/dev/null && echo "OK" || echo "FAIL")" "Resolved" "" "$(nslookup google.com 2>&1)"
-log_check "Network" "DNS Fwd" "$(nslookup "$(hostname)" &>/dev/null && echo "OK" || echo "FAIL")" "Fwd OK" "" "$(nslookup "$(hostname)" 2>&1)"
-log_check "Network" "DNS Rev" "$(nslookup "$IP_ADDR" &>/dev/null && echo "OK" || echo "FAIL")" "Rev OK" "" "$(nslookup "$IP_ADDR" 2>&1)"
+
+# Dynamic DNS Res
+RAW_RES=$(nslookup google.com 2>&1)
+if echo "$RAW_RES" | grep -q "Address"; then
+    log_check "Network" "DNS Res" "OK" "Resolved" "" "$RAW_RES"
+else
+    log_check "Network" "DNS Res" "FAIL" "Resolution failed" "" "$RAW_RES"
+fi
+
+# Dynamic DNS Fwd
+RAW_FWD=$(nslookup "$(hostname)" 2>&1)
+if echo "$RAW_FWD" | grep -q "Address"; then
+    log_check "Network" "DNS Fwd" "OK" "Forward lookup OK" "" "$RAW_FWD"
+else
+    log_check "Network" "DNS Fwd" "FAIL" "Forward lookup failed" "" "$RAW_FWD"
+fi
+
+# Dynamic DNS Rev
+RAW_REV=$(nslookup "$IP_ADDR" 2>&1)
+if echo "$RAW_REV" | grep -q "name ="; then
+    log_check "Network" "DNS Rev" "OK" "Reverse lookup OK" "" "$RAW_REV"
+else
+    log_check "Network" "DNS Rev" "FAIL" "Reverse lookup failed" "" "$RAW_REV"
+fi
 
 # --- 4. SYSTEM & HARDENING ---
 echo -e "\n--- Checking System & Hardening ---"
@@ -135,6 +154,7 @@ cat <<EOF > "$HTML_REPORT"
         .badge-pass { background: #dcfce7; color: #166534; }
         .badge-fail { background: #fee2e2; color: #991b1b; }
         .raw-output { background: #0f172a; color: #e2e8f0; padding: 15px; border-radius: 8px; font-family: monospace; white-space: pre-wrap; font-size: 0.8em; }
+        .fix-container { background: #fffbeb; padding: 10px; border-radius: 6px; border: 1px solid #fef3c7; display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }
         .copy-btn { background: #f59e0b; color: white; border: none; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
     </style>
 </head>
@@ -145,7 +165,7 @@ cat <<EOF > "$HTML_REPORT"
             <div class="tabs">
                 <button id="btn-dash" class="tab-btn active" onclick="tab('dash')">Dashboard</button>
                 <button id="btn-evid" class="tab-btn" onclick="tab('evid')">Technical Evidence</button>
-                <button id="btn-fix" class="tab-btn" onclick="tab('fix')" style="background:var(--warn); color:white;">⚡ Oneliner Quick-Fix</button>
+                <button id="btn-fix" class="tab-btn" onclick="tab('fix')" style="background:var(--warn); color:white;">⚡ Quick-Fix</button>
             </div>
         </header>
 
@@ -179,7 +199,7 @@ cat <<EOF > "$HTML_REPORT"
         <div id="fix" class="tab-content">
             <div class="cat-card">
                 <h3>⚡ Oneliner Quick-Fix</h3>
-                <p style="font-size:0.9em; color:#64748b;">Kopieer en plak onderstaande regel in je terminal om alle problemen in één keer op te lossen:</p>
+                <p style="font-size:0.9em; color:#64748b;">Kopieer en plak onderstaande regel in je terminal:</p>
                 <div class="raw-output" id="oneliner-text" style="font-weight:bold; color:var(--warn);">$ONELINER_CMDS</div>
                 <button class="tab-btn" style="margin-top:15px; background:var(--primary); color:white;" onclick="copyTo(document.getElementById('oneliner-text').innerText)">Kopieer Oneliner</button>
             </div>
@@ -193,4 +213,4 @@ cat <<EOF > "$HTML_REPORT"
 </html>
 EOF
 
-echo -e "\n${GREEN}Gereed! Rapport V25 gegenereerd:${NC} $HTML_REPORT"
+echo -e "\n${GREEN}Gereed! Rapport V26 gegenereerd:${NC} $HTML_REPORT"
