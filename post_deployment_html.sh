@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# POST-DEPLOYMENT VERIFICATIE DASHBOARD V21 - UNIVERSAL & DYNAMIC EDITION
+# POST-DEPLOYMENT VERIFICATIE DASHBOARD V22 - RESTORED STREAMLINED UI
 # ==============================================================================
 
 # Kleuren voor terminal
@@ -18,7 +18,6 @@ fi
 # 1. Dynamische OS Detectie
 ADMIN_USER="$1"
 OS_NAME=$(grep "^PRETTY_NAME=" /etc/os-release | cut -d'"' -f2)
-OS_ID=$(grep "^ID=" /etc/os-release | cut -d'"' -f2)
 KERNEL=$(uname -sr)
 UPTIME=$(uptime -p)
 VIRT=$(systemd-detect-virt)
@@ -29,15 +28,15 @@ TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
 HOSTNAME_SHORT=$(hostname -s)
 HTML_REPORT="report_${HOSTNAME_SHORT}_${TIMESTAMP}.html"
 
-# Pakketbeheerder detectie (Universal)
+# Pakketbeheerder detectie
 if command -v dnf &>/dev/null; then PKG_MGR="dnf"; elif command -v apt &>/dev/null; then PKG_MGR="apt"; else PKG_MGR="yum"; fi
 
-# Variabelen voor HTML
+# Variabelen voor HTML opbouw
 SEC_HTML=""; NET_HTML=""; SYS_HTML=""; CIS_HTML=""; TODO_HTML=""; EVIDENCE_HTML=""; ONELINER_CMDS=""
 TOTAL_CHECKS=0; PASSED_CHECKS=0; FAILED_CHECKS=0
 SEC_P=0; SEC_T=0; NET_P=0; NET_T=0; SYS_P=0; SYS_T=0; CIS_P=0; CIS_T=0
 
-# --- LOG FUNCTIE (Terminal detail + Oneliner builder) ---
+# --- LOG FUNCTIE ---
 log_check() {
     local category=$1; local name=$2; local status=$3; local msg=$4; local fix=$5; local raw_out=$6
     ((TOTAL_CHECKS++))
@@ -68,40 +67,30 @@ log_check() {
     EVIDENCE_HTML+="<div class='evidence-block'><div class='evidence-title'>[$category] $name</div><div class='raw-output'>$raw_out</div></div>"
 }
 
-echo -e "========================================================"
-echo -e "START AUDIT OP: $OS_NAME ($FQDN)"
-echo -e "========================================================"
+echo -e "========================================================\nSTART AUDIT: $OS_NAME ($FQDN)\n========================================================"
 
 # --- 1. SECURITY & MANDATORY AGENTS ---
 echo -e "\n--- Checking Security & Mandatory Agents ---"
-log_check "Security" "SELinux Status" "$([ "$(getenforce 2>/dev/null || echo "Disabled")" == "Enforcing" ] && echo "OK" || echo "FAIL")" "Status: $(getenforce 2>/dev/null || echo "N/A")" "sudo setenforce 1" "$(sestatus 2>/dev/null)"
-
-# Sophos MDR (Verplicht)
-if systemctl list-unit-files | grep -q sophos-spl; then
-    log_check "Security" "Sophos MDR" "$(systemctl is-active --quiet sophos-spl && echo "OK" || echo "FAIL")" "Service status" "sudo systemctl start sophos-spl" "$(systemctl status sophos-spl --no-pager 2>&1)"
+log_check "Security" "SELinux Status" "$([ "$(getenforce 2>/dev/null)" == "Enforcing" ] && echo "OK" || echo "FAIL")" "Is $(getenforce 2>/dev/null)" "sudo setenforce 1 && sudo sed -i 's/SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config" "$(sestatus 2>/dev/null)"
+log_check "Security" "Firewall" "$(systemctl is-active --quiet firewalld && echo "OK" || echo "FAIL")" "Service active" "sudo systemctl enable --now firewalld" "$(systemctl status firewalld --no-pager)"
+log_check "Security" "Root Password" "OK" "Gewijzigd: $(chage -l root | grep 'Last password change' | cut -d: -f2)" "" "$(chage -l root)"
+if id "$ADMIN_USER" &>/dev/null; then
+    log_check "Security" "$ADMIN_USER Password" "OK" "Gebruiker aanwezig" "" "$(chage -l "$ADMIN_USER")"
+    log_check "Security" "Sudo Rights" "$(sudo -l -U "$ADMIN_USER" 2>/dev/null | grep -qE "\(ALL(:ALL)?\) ALL" && echo "OK" || echo "FAIL")" "ALL rechten" "sudo usermod -aG wheel $ADMIN_USER" "$(sudo -l -U "$ADMIN_USER" 2>/dev/null)"
 else
-    log_check "Security" "Sophos MDR" "FAIL" "Niet geïnstalleerd" "Installeer Sophos MDR Agent" "Package not found"
+    log_check "Security" "$ADMIN_USER" "FAIL" "Niet gevonden" "sudo useradd $ADMIN_USER" "User not found"
 fi
-
-# Azure Arc (Verplicht)
+log_check "Security" "Sophos MDR" "$(systemctl is-active --quiet sophos-spl && echo "OK" || echo "FAIL")" "Service status" "sudo systemctl start sophos-spl" "$(systemctl status sophos-spl --no-pager 2>&1)"
 RAW_ARC=$(azcmagent show 2>&1)
-if echo "$RAW_ARC" | grep -iq "Connected"; then
-    log_check "Security" "Azure Arc" "OK" "Verbonden" "" "$RAW_ARC"
-else
-    log_check "Security" "Azure Arc" "FAIL" "Niet verbonden/geïnstalleerd" "sudo azcmagent connect" "$RAW_ARC"
-fi
+log_check "Security" "Azure Arc" "$(echo "$RAW_ARC" | grep -iq "Connected" && echo "OK" || echo "FAIL")" "Status" "sudo azcmagent connect" "$RAW_ARC"
 
 # --- 2. NETWORK & CONNECTIVITY ---
 echo -e "\n--- Checking Network & Connectivity ---"
-log_check "Network" "Hostname" "$([[ "$(hostnamectl --static)" =~ ^it2.* ]] && echo "OK" || echo "FAIL")" "$(hostname)" "sudo hostnamectl set-hostname it2-server" "$(hostnamectl)"
-if [ "$PKG_MGR" == "apt" ]; then
-    log_check "Network" "Static IP" "OK" "Check handmatig (Ubuntu)" "" "$(ip addr)"
-else
-    log_check "Network" "Static IP" "$([ "$(nmcli -f ipv4.method connection show "$(nmcli -t -f NAME connection show --active | head -n1)" | awk '{print $2}')" == "manual" ] && echo "OK" || echo "FAIL")" "Manual check" "nmtui" "$(nmcli device show)"
-fi
+log_check "Network" "Hostname" "$([[ "$(hostnamectl --static)" =~ ^it2.* ]] && echo "OK" || echo "FAIL")" "$(hostname)" "sudo hostnamectl set-hostname it2-$(hostname)" "$(hostnamectl)"
+log_check "Network" "Static IP" "$([ "$(nmcli -f ipv4.method connection show "$(nmcli -t -f NAME connection show --active | head -n1)" 2>/dev/null | awk '{print $2}')" == "manual" ] && echo "OK" || echo "FAIL")" "Manual check" "nmtui" "$(nmcli device show 2>/dev/null)"
 [ -n "$GATEWAY_IP" ] && ping -c 2 -q "$GATEWAY_IP" &>/dev/null && log_check "Network" "Gateway Ping" "OK" "Ping $GATEWAY_IP OK" "" "GW: $GATEWAY_IP"
-ping -c 2 -q 8.8.8.8 &>/dev/null && log_check "Network" "Internet Ping" "OK" "Online" "" "8.8.8.8 reachable"
-log_check "Network" "DNS Resolutie" "$(nslookup google.com &>/dev/null && echo "OK" || echo "FAIL")" "Resolved" "" "$(nslookup google.com 2>&1)"
+ping -c 2 -q 8.8.8.8 &>/dev/null && log_check "Network" "Internet Ping" "OK" "8.8.8.8 OK" "" "8.8.8.8 reachable"
+log_check "Network" "DNS Resolutie" "$(nslookup google.com &>/dev/null && echo "OK" || echo "FAIL")" "google.com resolved" "" "$(nslookup google.com 2>&1)"
 log_check "Network" "DNS Forward" "$(nslookup "$(hostname)" &>/dev/null && echo "OK" || echo "FAIL")" "Fwd OK" "" "$(nslookup "$(hostname)" 2>&1)"
 log_check "Network" "DNS Reverse" "$(nslookup "$IP_ADDR" &>/dev/null && echo "OK" || echo "FAIL")" "Rev OK" "" "$(nslookup "$IP_ADDR" 2>&1)"
 
@@ -112,19 +101,20 @@ if [ "$PKG_MGR" == "apt" ]; then
 else
     RAW_UP=$(dnf check-update); [ $? -eq 0 ] && log_check "System" "Updates" "OK" "Up-to-date" "" "$RAW_UP" || log_check "System" "Updates" "FAIL" "Updates beschikbaar" "sudo dnf update -y" "$RAW_UP"
 fi
-log_check "System" "NTP Sync" "$(timedatectl show -p NTPSynchronized --value | grep -q 'yes' && echo "OK" || echo "FAIL")" "Synced" "sudo systemctl restart chronyd" "$(timedatectl)"
+log_check "System" "NTP Sync" "$(timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q 'yes' && echo "OK" || echo "FAIL")" "Synced" "sudo systemctl restart chronyd" "$(timedatectl)"
 ROOT_USE=$(df / --output=pcent | tail -1 | tr -dc '0-9')
 log_check "System" "Disk Usage" "$([ "$ROOT_USE" -lt 90 ] && echo "OK" || echo "FAIL")" "Root: ${ROOT_USE}%" "" "$(df -h /)"
 RAW_MOUNTS=$(findmnt -nl -o TARGET,OPTIONS)
-[ -d /tmp ] && log_check "System" "Hardening TMP" "$(echo "$RAW_MOUNTS" | grep -q "noexec" && echo "OK" || echo "FAIL")" "noexec" "sudo mount -o remount,noexec /tmp" "$RAW_MOUNTS"
+[ -d /tmp ] && log_check "System" "Hardening TMP" "$(echo "$RAW_MOUNTS" | grep -q "/tmp.*noexec" && echo "OK" || echo "FAIL")" "noexec" "sudo mount -o remount,noexec /tmp" "$RAW_MOUNTS"
 
 # --- 4. CIS COMPLIANCE ---
 echo -e "\n--- Running CIS Compliance Audit ---"
 SSH_ROOT=$(sshd -T 2>/dev/null | grep -i "permitrootlogin" | awk '{print $2}')
 log_check "CIS" "SSH Root Login" "$([ "$SSH_ROOT" == "no" ] && echo "OK" || echo "FAIL")" "Status: $SSH_ROOT" "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && sudo systemctl restart sshd" "$(sshd -T 2>/dev/null | grep -i permitroot)"
 RAW_AUDIT=$(auditctl -l 2>/dev/null)
-log_check "CIS" "Audit Rules" "$(echo "$RAW_AUDIT" | grep -q "identity" && echo "OK" || echo "FAIL")" "Rules check" "sudo echo '-w /etc/passwd -p wa -k identity' >> /etc/audit/rules.d/audit.rules && sudo augenrules --load" "$RAW_AUDIT"
-log_check "CIS" "Perms /etc/shadow" "$([ "$(stat -c "%a" /etc/shadow)" == "0" ] && echo "OK" || echo "FAIL")" "Status: $(stat -c "%a" /etc/shadow)" "sudo chmod 000 /etc/shadow" "$(ls -l /etc/shadow)"
+AUDIT_FIX="sudo echo '-w /etc/passwd -p wa -k identity' >> /etc/audit/rules.d/audit.rules && sudo augenrules --load"
+log_check "CIS" "Audit Rules" "$(echo "$RAW_AUDIT" | grep -q "identity" && echo "OK" || echo "FAIL")" "Rules check" "$AUDIT_FIX" "$RAW_AUDIT"
+log_check "CIS" "Perms /etc/shadow" "$([ "$(stat -c "%a" /etc/shadow 2>/dev/null)" == "0" ] && echo "OK" || echo "FAIL")" "Status: $(stat -c "%a" /etc/shadow 2>/dev/null)" "sudo chmod 000 /etc/shadow" "$(ls -l /etc/shadow)"
 
 # Procenten berekenen
 calc_perc() { [ "$2" -eq 0 ] && echo "100" || echo $(( $1 * 100 / $2 )); }
@@ -154,20 +144,23 @@ cat <<EOF > "$HTML_REPORT"
         .tab-btn.active { background: var(--primary); color: white; }
         .tab-content { display: none; } .tab-content.active { display: block; }
         .todo-box { background: #fee2e2; border: 1px solid #fecaca; padding: 20px; border-radius: 12px; margin-bottom: 25px; }
-        .cat-card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 25px; }
+        .cat-card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .cat-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; margin-bottom: 15px; }
         table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
         td { padding: 12px; border-bottom: 1px solid #f8fafc; vertical-align: top; }
         .badge { padding: 3px 10px; border-radius: 6px; font-size: 0.8em; font-weight: 700; }
         .badge-pass { background: #dcfce7; color: #166534; }
         .badge-fail { background: #fee2e2; color: #991b1b; }
         .raw-output { background: #0f172a; color: #e2e8f0; padding: 15px; border-radius: 8px; font-family: monospace; white-space: pre-wrap; font-size: 0.8em; }
+        .fix-container { background: #fffbeb; padding: 10px; border-radius: 6px; border: 1px solid #fef3c7; display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }
+        .copy-btn { background: #f59e0b; color: white; border: none; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
     </style>
 </head>
 <body>
     <div class="container">
         <header style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
             <h1 style="margin:0;">🛡️ $OS_NAME Audit Dashboard</h1>
-            <div class="tabs"><button id="btn-dash" class="tab-btn active" onclick="tab('dash')">Dashboard</button><button id="btn-evid" class="tab-btn" onclick="tab('evid')">Evidence</button><button id="btn-fix" class="tab-btn" onclick="tab('fix')" style="background:var(--warn); color:white;">⚡ Oneliner Quick-Fix</button></div>
+            <div class="tabs"><button id="btn-dash" class="tab-btn active" onclick="tab('dash')">Dashboard</button><button id="btn-evid" class="tab-btn" onclick="tab('evid')">Technical Evidence</button><button id="btn-fix" class="tab-btn" onclick="tab('fix')" style="background:var(--warn); color:white;">⚡ Oneliner Quick-Fix</button></div>
         </header>
 
         <div class="sys-header">
@@ -188,7 +181,11 @@ cat <<EOF > "$HTML_REPORT"
 
         <div id="dash" class="tab-content active">
             $([ "$FAILED_CHECKS" -gt 0 ] && echo "<div class='todo-box'><h3>⚠️ Actie Vereist ($FAILED_CHECKS)</h3>$TODO_HTML</div>")
-            <div class="cat-card"><h3>🛡️ Audit Resultaten</h3><table><tbody>$CIS_HTML $SEC_HTML $NET_HTML $SYS_HTML</tbody></table></div>
+            
+            <div class="cat-card"><div class="cat-header"><h3>🛡️ CIS Compliance Audit</h3><span>$CIS_PERC%</span></div><table><tbody>$CIS_HTML</tbody></table></div>
+            <div class="cat-card"><div class="cat-header"><h3>🔐 Security & Agents</h3><span>$SEC_PERC%</span></div><table><tbody>$SEC_HTML</tbody></table></div>
+            <div class="cat-card"><div class="cat-header"><h3>🌐 Network & Connectivity</h3><span>$NET_PERC%</span></div><table><tbody>$NET_HTML</tbody></table></div>
+            <div class="cat-card"><div class="cat-header"><h3>⚙️ System & Hardening</h3><span>$SYS_PERC%</span></div><table><tbody>$SYS_HTML</tbody></table></div>
         </div>
 
         <div id="evid" class="tab-content">$EVIDENCE_HTML</div>
@@ -196,7 +193,7 @@ cat <<EOF > "$HTML_REPORT"
         <div id="fix" class="tab-content">
             <div class="cat-card">
                 <h3>⚡ Oneliner Quick-Fix</h3>
-                <p style="font-size:0.9em; color:#64748b;">Kopieer en plak deze regel direct in je terminal:</p>
+                <p style="font-size:0.9em; color:#64748b;">Kopieer en plak deze regel direct in je terminal om alle problemen in één keer op te lossen:</p>
                 <div class="raw-output" id="oneliner-text" style="font-weight:bold; color:var(--warn);">$ONELINER_CMDS</div>
                 <button class="tab-btn" style="margin-top:15px; background:var(--primary); color:white;" onclick="copyTo(document.getElementById('oneliner-text').innerText)">Kopieer Oneliner</button>
             </div>
@@ -204,10 +201,10 @@ cat <<EOF > "$HTML_REPORT"
     </div>
     <script>
         function tab(n){document.querySelectorAll('.tab-content,.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById(n).classList.add('active');document.getElementById('btn-'+n).classList.add('active');}
-        function copyTo(t){navigator.clipboard.writeText(t);alert('Gekopieerd!');}
+        function copyTo(t){navigator.clipboard.writeText(t);alert('Oneliner gekopieerd!');}
     </script>
 </body>
 </html>
 EOF
 
-echo -e "\n${GREEN}Gereed! Rapport V21 gegenereerd:${NC} $HTML_REPORT"
+echo -e "\n${GREEN}Gereed! Rapport V22 gegenereerd:${NC} $HTML_REPORT"
