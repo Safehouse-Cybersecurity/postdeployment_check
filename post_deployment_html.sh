@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# POST-DEPLOYMENT VERIFICATIE DASHBOARD V30 
+# POST-DEPLOYMENT VERIFICATIE DASHBOARD V31 - STORAGE CAPACITY & 6-BOX UI
 # ==============================================================================
 
 # Kleuren voor terminal
@@ -30,7 +30,7 @@ HTML_REPORT="report_${HOSTNAME_SHORT}_${TIMESTAMP}.html"
 
 if command -v dnf &>/dev/null; then PKG_MGR="dnf"; elif command -v apt &>/dev/null; then PKG_MGR="apt"; else PKG_MGR="yum"; fi
 
-# Variabelen voor HTML (Strikte 6-box scheiding)
+# Variabelen voor HTML (6-box scheiding behouden)
 CIS_HTML=""; SEC_HTML=""; NET_HTML=""; SYS_HTML=""; STOR_HTML=""; HARD_HTML=""; TODO_HTML=""; EVIDENCE_HTML=""; ONELINER_CMDS=""
 TOTAL_CHECKS=0; PASSED_CHECKS=0; FAILED_CHECKS=0
 SEC_P=0; SEC_T=0; NET_P=0; NET_T=0; SYS_P=0; SYS_T=0; CIS_P=0; CIS_T=0; STOR_P=0; STOR_T=0; HARD_P=0; HARD_T=0
@@ -73,7 +73,7 @@ echo -e "========================================================\nSTART AUDIT: 
 # --- 1. CIS COMPLIANCE ---
 echo -e "\n--- Running CIS Compliance Audit ---"
 SSH_ROOT=$(sshd -T 2>/dev/null | grep -i "permitrootlogin" | awk '{print $2}')
-log_check "CIS" "SSH Root Login" "$([ "$SSH_ROOT" == "no" ] && echo "OK" || echo "FAIL")" "Root login: $SSH_ROOT" "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && sudo systemctl restart sshd" "$(sshd -T 2>/dev/null | grep -i permitroot)"
+log_check "CIS" "SSH Root Login" "$([ "$SSH_ROOT" == "no" ] && echo "OK" || echo "FAIL")" "Status: $SSH_ROOT" "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && sudo systemctl restart sshd" "$(sshd -T 2>/dev/null | grep -i permitroot)"
 RAW_AUDIT=$(auditctl -l 2>/dev/null)
 AUDIT_FIX="echo '-w /etc/passwd -p wa -k identity' | sudo tee -a /etc/audit/rules.d/audit.rules > /dev/null && sudo augenrules --load"
 log_check "CIS" "Audit Rules" "$(echo "$RAW_AUDIT" | grep -q "identity" && echo "OK" || echo "FAIL")" "Rules check" "$AUDIT_FIX" "$RAW_AUDIT"
@@ -81,12 +81,12 @@ log_check "CIS" "Perms /etc/shadow" "$([ "$(stat -c "%a" /etc/shadow 2>/dev/null
 
 # --- 2. SECURITY & AGENTS (Inclusief Qemu) ---
 echo -e "\n--- Checking Security & Mandatory Agents ---"
-log_check "Security" "SELinux Status" "$([ "$(getenforce 2>/dev/null)" == "Enforcing" ] && echo "OK" || echo "FAIL")" "Is $(getenforce 2>/dev/null)" "sudo setenforce 1 && sudo sed -i 's/SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config" "$(sestatus 2>/dev/null)"
+log_check "Security" "SELinux Status" "$([ "$(getenforce 2>/dev/null)" == "Enforcing" ] && echo "OK" || echo "FAIL")" "Status: $(getenforce 2>/dev/null)" "sudo setenforce 1 && sudo sed -i 's/SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config" "$(sestatus 2>/dev/null)"
 log_check "Security" "Firewall" "$(systemctl is-active --quiet firewalld && echo "OK" || echo "FAIL")" "Service active" "sudo systemctl enable --now firewalld" "$(systemctl status firewalld --no-pager)"
-log_check "Security" "Sophos MDR" "$(systemctl is-active --quiet sophos-spl && echo "OK" || echo "FAIL")" "Service status" "sudo systemctl start sophos-spl" "$(systemctl status sophos-spl --no-pager 2>&1)"
+log_check "Security" "Sophos MDR" "$(systemctl is-active --quiet sophos-spl && echo "OK" || echo "FAIL")" "Service active" "sudo systemctl start sophos-spl" "$(systemctl status sophos-spl --no-pager 2>&1)"
 log_check "Security" "Azure Arc" "$(azcmagent show 2>&1 | grep -iq "Connected" && echo "OK" || echo "FAIL")" "Verbonden" "sudo azcmagent connect" "$(azcmagent show 2>&1)"
 if systemctl list-unit-files | grep -q qemu-guest-agent; then
-    log_check "Security" "Qemu Agent" "$(systemctl is-active --quiet qemu-guest-agent && echo "OK" || echo "FAIL")" "Status" "sudo systemctl enable --now qemu-guest-agent" "$(systemctl status qemu-guest-agent --no-pager)"
+    log_check "Security" "Qemu Agent" "$(systemctl is-active --quiet qemu-guest-agent && echo "OK" || echo "FAIL")" "Service status" "sudo systemctl enable --now qemu-guest-agent" "$(systemctl status qemu-guest-agent --no-pager)"
 else
     log_check "Security" "Qemu Agent" "FAIL" "Niet geïnstalleerd" "sudo $PKG_MGR install qemu-guest-agent -y" "Package missing"
 fi
@@ -101,7 +101,7 @@ for check in "google.com:Address:DNS Res" "$(hostname):Address:DNS Fwd" "$IP_ADD
     else log_check "Network" "$label" "FAIL" "${label//DNS /} failed" "" "$RAW_NS"; fi
 done
 
-# --- 4. SYSTEM MANAGEMENT (Maintenance only) ---
+# --- 4. SYSTEM MANAGEMENT ---
 echo -e "\n--- Checking System Management ---"
 if [ "$PKG_MGR" == "apt" ]; then
     RAW_UP=$(apt list --upgradable 2>/dev/null | wc -l); [ "$RAW_UP" -le 1 ] && log_check "System" "Updates" "OK" "Up-to-date" "" "No updates" || log_check "System" "Updates" "FAIL" "Updates beschikbaar" "sudo apt update && sudo apt upgrade -y" "Updates found"
@@ -111,11 +111,14 @@ fi
 log_check "System" "Timezone" "OK" "$(timedatectl show -p Timezone --value 2>/dev/null)" "" "$(timedatectl)"
 log_check "System" "NTP Sync" "$(timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q 'yes' && echo "OK" || echo "FAIL")" "Synced" "sudo systemctl restart chronyd" "$(timedatectl)"
 
-# --- 5. STORAGE & FILE SYSTEMS (All disks from image_8f4326.png) ---
+# --- 5. STORAGE & FILE SYSTEMS (Aangepast naar Used/Total) ---
 echo -e "\n--- Checking Storage & File Systems ---"
 while read -r line; do
-    MP=$(echo "$line" | awk '{print $6}'); USE=$(echo "$line" | awk '{print $5}' | tr -d '%')
-    log_check "Storage" "Disk: $MP" "$([ "$USE" -lt 90 ] && echo "OK" || echo "FAIL")" "Usage: ${USE}%" "" "$(df -h "$MP")"
+    MP=$(echo "$line" | awk '{print $6}')
+    TOTAL=$(echo "$line" | awk '{print $2}')
+    USED=$(echo "$line" | awk '{print $3}')
+    PERC=$(echo "$line" | awk '{print $5}' | tr -d '%')
+    log_check "Storage" "Disk: $MP" "$([ "$PERC" -lt 90 ] && echo "OK" || echo "FAIL")" "$USED / $TOTAL" "" "$(df -h "$MP")"
 done < <(df -h | grep -vE '^Filesystem|tmpfs|cdrom|devtmpfs')
 
 # --- 6. PARTITION HARDENING ---
@@ -144,7 +147,7 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: #1e293b; 
 .health-card { background: white; padding: 12px; border-radius: 12px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 .health-val { font-size: 1.4em; font-weight: 700; display: block; margin-bottom: 4px; }
 .h-bar { height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; }
-.h-fill { height: 100%; }
+.h-fill { height: 100%; transition: width 0.5s; }
 .tabs { display: flex; gap: 8px; margin-bottom: 20px; justify-content: flex-end; }
 .tab-btn { padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; background: #cbd5e1; color: #475569; }
 .tab-btn.active { background: var(--primary); color: white; }
@@ -158,6 +161,7 @@ td { padding: 12px; border-bottom: 1px solid #f8fafc; vertical-align: top; }
 .badge-pass { background: #dcfce7; color: #166534; }
 .badge-fail { background: #fee2e2; color: #991b1b; }
 .raw-output { background: #0f172a; color: #e2e8f0; padding: 15px; border-radius: 8px; font-family: monospace; white-space: pre-wrap; font-size: 0.8em; }
+.fix-container { background: #fffbeb; padding: 10px; border-radius: 6px; border: 1px solid #fef3c7; display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }
 .copy-btn { background: #f59e0b; color: white; border: none; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
 </style></head>
 <body><div class="container">
@@ -185,8 +189,8 @@ $([ "$FAILED_CHECKS" -gt 0 ] && echo "<div class='todo-box'><h3>⚠️ Openstaan
 <div id="fix" class="tab-content"><div class="cat-card"><h3>⚡ Oneliner Quick-Fix</h3><p style="font-size:0.9em;">Kopieer en plak onderstaande regel in je terminal:</p><div class="raw-output" id="oneliner-text" style="font-weight:bold; color:var(--warn);">$ONELINER_CMDS</div><button class="tab-btn" style="margin-top:15px; background:var(--primary); color:white;" onclick="copyTo(document.getElementById('oneliner-text').innerText)">Kopieer Oneliner</button></div></div></div>
 <script>
 function tab(n){document.querySelectorAll('.tab-content,.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById(n).classList.add('active');document.getElementById('btn-'+n).classList.add('active');}
-function copyTo(t){navigator.clipboard.writeText(t);alert('Gekopieerd!');}
+function copyTo(t){navigator.clipboard.writeText(t);alert('Oneliner gekopieerd!');}
 </script></body></html>
 EOF
 
-echo -e "\n${GREEN}Gereed! Rapport V30 gegenereerd:${NC} $HTML_REPORT"
+echo -e "\n${GREEN}Gereed! Rapport V31 gegenereerd:${NC} $HTML_REPORT"
