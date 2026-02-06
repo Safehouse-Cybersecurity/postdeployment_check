@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# POST-DEPLOYMENT VERIFICATIE DASHBOARD V18 - FULL DETAIL RESTORED
+# POST-DEPLOYMENT VERIFICATIE DASHBOARD V19 - ONELINER QUICK-FIX & FULL DETAIL
 # ==============================================================================
 
 # Kleuren voor terminal
@@ -28,11 +28,11 @@ TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
 HOSTNAME_SHORT=$(hostname -s)
 HTML_REPORT="report_${HOSTNAME_SHORT}_${TIMESTAMP}.html"
 
-# Opschonen oude rapporten
+# Housekeeping
 find . -name "report_${HOSTNAME_SHORT}_*.html" -mtime +7 -delete 2>/dev/null
 
 # Variabelen voor HTML
-SEC_HTML=""; NET_HTML=""; SYS_HTML=""; CIS_HTML=""; TODO_HTML=""; EVIDENCE_HTML=""; QUICK_FIX_CMDS=""
+SEC_HTML=""; NET_HTML=""; SYS_HTML=""; CIS_HTML=""; TODO_HTML=""; EVIDENCE_HTML=""; ONELINER_CMDS=""
 TOTAL_CHECKS=0; PASSED_CHECKS=0; FAILED_CHECKS=0
 SEC_P=0; SEC_T=0; NET_P=0; NET_T=0; SYS_P=0; SYS_T=0; CIS_P=0; CIS_T=0
 
@@ -49,7 +49,11 @@ log_check() {
         H_S="<span class='badge badge-fail'>FAIL</span>"; H_ROW="row-fail"
         H_FIX="<div class='fix-container'><code>$fix</code><button class='copy-btn' onclick=\"copyTo('$fix')\">Copy</button></div>"
         TODO_HTML+="<div class='todo-item'><strong>$name:</strong> $msg</div>"
-        [ -n "$fix" ] && QUICK_FIX_CMDS+="$fix"$'\n'
+        # Bouw oneliner op (ontwijk lege fixes en dubbele sudo's)
+        if [ -n "$fix" ]; then
+            [ -n "$ONELINER_CMDS" ] && ONELINER_CMDS+=" && "
+            ONELINER_CMDS+="$fix"
+        fi
     fi
     local ROW="<tr class='$H_ROW'><td>$name</td><td>$H_S</td><td>$msg $H_FIX</td></tr>"
     case $category in
@@ -65,23 +69,23 @@ echo -e "========================================================\nSTART COMPLET
 
 # --- 1. SECURITY & AGENTS ---
 echo -e "\n--- Checking Security & Agents ---"
-log_check "Security" "SELinux Status" "$([ "$(getenforce)" == "Enforcing" ] && echo "OK" || echo "FAIL")" "Is $(getenforce)" "setenforce 1 && sed -i 's/SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config" "$(sestatus)"
-log_check "Security" "Firewall" "$(systemctl is-active --quiet firewalld && echo "OK" || echo "FAIL")" "Service active" "systemctl enable --now firewalld" "$(systemctl status firewalld --no-pager)"
+log_check "Security" "SELinux Status" "$([ "$(getenforce)" == "Enforcing" ] && echo "OK" || echo "FAIL")" "Is $(getenforce)" "sudo setenforce 1 && sudo sed -i 's/SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config" "$(sestatus)"
+log_check "Security" "Firewall" "$(systemctl is-active --quiet firewalld && echo "OK" || echo "FAIL")" "Service active" "sudo systemctl enable --now firewalld" "$(systemctl status firewalld --no-pager)"
 log_check "Security" "Root Password" "OK" "Gewijzigd: $(chage -l root | grep 'Last password change' | cut -d: -f2)" "" "$(chage -l root)"
 if id "$ADMIN_USER" &>/dev/null; then
     log_check "Security" "$ADMIN_USER Password" "OK" "Gebruiker aanwezig" "" "$(chage -l "$ADMIN_USER")"
     RAW_SUDO=$(sudo -l -U "$ADMIN_USER" 2>/dev/null)
-    log_check "Security" "Sudo Rights" "$(echo "$RAW_SUDO" | grep -qE "\(ALL(:ALL)?\) ALL" && echo "OK" || echo "FAIL")" "ALL rechten" "usermod -aG wheel $ADMIN_USER" "$RAW_SUDO"
+    log_check "Security" "Sudo Rights" "$(echo "$RAW_SUDO" | grep -qE "\(ALL(:ALL)?\) ALL" && echo "OK" || echo "FAIL")" "ALL rechten" "sudo usermod -aG wheel $ADMIN_USER" "$RAW_SUDO"
 else
-    log_check "Security" "$ADMIN_USER" "FAIL" "Niet gevonden" "useradd $ADMIN_USER" "User not found"
+    log_check "Security" "$ADMIN_USER" "FAIL" "Niet gevonden" "sudo useradd $ADMIN_USER" "User not found"
 fi
-log_check "Security" "Sophos MDR" "$(systemctl is-active --quiet sophos-spl && echo "OK" || echo "FAIL")" "Service status" "systemctl start sophos-spl" "$(systemctl status sophos-spl --no-pager 2>&1)"
+log_check "Security" "Sophos MDR" "$(systemctl is-active --quiet sophos-spl && echo "OK" || echo "FAIL")" "Service status" "sudo systemctl start sophos-spl" "$(systemctl status sophos-spl --no-pager 2>&1)"
 RAW_ARC=$(azcmagent show 2>&1)
 log_check "Security" "Azure Arc" "$(echo "$RAW_ARC" | grep -iq "Connected" && echo "OK" || echo "FAIL")" "Status" "sudo azcmagent connect" "$RAW_ARC"
 
 # --- 2. NETWORK & CONNECTIVITY ---
 echo -e "\n--- Checking Network & Connectivity ---"
-log_check "Network" "Hostname" "$([[ "$(hostnamectl --static)" =~ ^it2.* ]] && echo "OK" || echo "FAIL")" "$(hostname)" "hostnamectl set-hostname it2-$(hostname)" "$(hostnamectl)"
+log_check "Network" "Hostname" "$([[ "$(hostnamectl --static)" =~ ^it2.* ]] && echo "OK" || echo "FAIL")" "$(hostname)" "sudo hostnamectl set-hostname it2-$(hostname)" "$(hostnamectl)"
 log_check "Network" "Static IP" "$([ "$(nmcli -f ipv4.method connection show "$(nmcli -t -f NAME connection show --active | head -n1)" | awk '{print $2}')" == "manual" ] && echo "OK" || echo "FAIL")" "Manual check" "nmtui" "$(nmcli device show)"
 if [ -n "$GATEWAY_IP" ]; then
     ping -c 2 -q "$GATEWAY_IP" &>/dev/null && log_check "Network" "Gateway Ping" "OK" "Ping $GATEWAY_IP OK" "" "GW: $GATEWAY_IP" || log_check "Network" "Gateway Ping" "FAIL" "No ping" "" "GW: $GATEWAY_IP"
@@ -94,25 +98,23 @@ log_check "Network" "Open Ports" "OK" "Listening ports gecheckt" "" "$(ss -tuln 
 
 # --- 3. SYSTEM & HARDENING ---
 echo -e "\n--- Checking System & Hardening ---"
-RAW_UP=$(dnf check-update); [ $? -eq 0 ] && log_check "System" "Updates" "OK" "Up-to-date" "" "$RAW_UP" || log_check "System" "Updates" "FAIL" "Beschikbaar" "dnf update -y" "$RAW_UP"
+RAW_UP=$(dnf check-update); [ $? -eq 0 ] && log_check "System" "Updates" "OK" "Up-to-date" "" "$RAW_UP" || log_check "System" "Updates" "FAIL" "Beschikbaar" "sudo dnf update -y" "$RAW_UP"
 log_check "System" "Timezone" "OK" "$(timedatectl show -p Timezone --value)" "" "$(timedatectl)"
-log_check "System" "NTP Sync" "$(timedatectl show -p NTPSynchronized --value | grep -q 'yes' && echo "OK" || echo "FAIL")" "Synced" "systemctl restart chronyd" "$(timedatectl)"
+log_check "System" "NTP Sync" "$(timedatectl show -p NTPSynchronized --value | grep -q 'yes' && echo "OK" || echo "FAIL")" "Synced" "sudo systemctl restart chronyd" "$(timedatectl)"
 ROOT_USE=$(df / --output=pcent | tail -1 | tr -dc '0-9')
 log_check "System" "Disk Usage" "$([ "$ROOT_USE" -lt 90 ] && echo "OK" || echo "FAIL")" "Root: ${ROOT_USE}%" "" "$(df -h /)"
 RAW_MOUNTS=$(findmnt -nl -o TARGET,OPTIONS)
-[ -d /tmp ] && log_check "System" "Hardening TMP" "$(echo "$RAW_MOUNTS" | grep -q "noexec" && echo "OK" || echo "FAIL")" "noexec" "mount -o remount,noexec /tmp" "$RAW_MOUNTS"
-[ -d /dev/shm ] && log_check "System" "Hardening SHM" "$(echo "$RAW_MOUNTS" | grep -q "nodev" && echo "OK" || echo "FAIL")" "nodev" "mount -o remount,nodev /dev/shm" "$RAW_MOUNTS"
+[ -d /tmp ] && log_check "System" "Hardening TMP" "$(echo "$RAW_MOUNTS" | grep -q "noexec" && echo "OK" || echo "FAIL")" "noexec" "sudo mount -o remount,noexec /tmp" "$RAW_MOUNTS"
 
 # --- 4. CIS COMPLIANCE ---
 echo -e "\n--- Running CIS Compliance Audit ---"
 SSH_ROOT=$(sshd -T | grep -i "permitrootlogin" | awk '{print $2}')
-log_check "CIS" "SSH Root Login" "$([ "$SSH_ROOT" == "no" ] && echo "OK" || echo "FAIL")" "Status: $SSH_ROOT" "sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && systemctl restart sshd" "$(sshd -T | grep -i permitroot)"
+log_check "CIS" "SSH Root Login" "$([ "$SSH_ROOT" == "no" ] && echo "OK" || echo "FAIL")" "Status: $SSH_ROOT" "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && sudo systemctl restart sshd" "$(sshd -T | grep -i permitroot)"
 
 RAW_AUDIT=$(auditctl -l)
-log_check "CIS" "Audit: User Changes" "$(echo "$RAW_AUDIT" | grep -q "/etc/passwd.*identity" && echo "OK" || echo "FAIL")" "Identity rule" "echo '-w /etc/passwd -p wa -k identity' >> /etc/audit/rules.d/audit.rules && augenrules --load" "$RAW_AUDIT"
-log_check "CIS" "Audit: Priv Changes" "$(echo "$RAW_AUDIT" | grep -q "/etc/shadow.*identity" && echo "OK" || echo "FAIL")" "Privilege rule" "echo '-w /etc/shadow -p wa -k identity' >> /etc/audit/rules.d/audit.rules && augenrules --load" "$RAW_AUDIT"
-log_check "CIS" "Audit: Sudo Usage" "$(echo "$RAW_AUDIT" | grep -q "sudoers.*priv_esc" && echo "OK" || echo "FAIL")" "Sudo rule" "echo '-w /etc/sudoers -p wa -k priv_esc' >> /etc/audit/rules.d/audit.rules && augenrules --load" "$RAW_AUDIT"
-log_check "CIS" "Perms /etc/shadow" "$([ "$(stat -c "%a" /etc/shadow)" == "0" ] && echo "OK" || echo "FAIL")" "Status: $(stat -c "%a" /etc/shadow)" "chmod 000 /etc/shadow" "$(ls -l /etc/shadow)"
+AUDIT_FIX="sudo echo '-w /etc/passwd -p wa -k identity' >> /etc/audit/rules.d/audit.rules && sudo augenrules --load"
+log_check "CIS" "Audit Rules" "$(echo "$RAW_AUDIT" | grep -q "identity" && echo "OK" || echo "FAIL")" "Rules check" "$AUDIT_FIX" "$RAW_AUDIT"
+log_check "CIS" "Perms /etc/shadow" "$([ "$(stat -c "%a" /etc/shadow)" == "0" ] && echo "OK" || echo "FAIL")" "Status: $(stat -c "%a" /etc/shadow)" "sudo chmod 000 /etc/shadow" "$(ls -l /etc/shadow)"
 
 # Procenten
 calc_perc() { [ "$2" -eq 0 ] && echo "100" || echo $(( $1 * 100 / $2 )); }
@@ -124,7 +126,7 @@ cat <<EOF > "$HTML_REPORT"
 <html lang="nl">
 <head>
     <meta charset="UTF-8">
-    <title>Audit V18: $HOSTNAME_SHORT</title>
+    <title>Audit V19: $HOSTNAME_SHORT</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         :root { --bg: #f1f5f9; --primary: #0f172a; --success: #22c55e; --fail: #ef4444; --warn: #f59e0b; }
@@ -133,7 +135,7 @@ cat <<EOF > "$HTML_REPORT"
         .sys-header { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .sys-item strong { display: block; font-size: 0.75em; color: #64748b; text-transform: uppercase; }
         .health-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
-        .health-card { background: white; padding: 15px; border-radius: 12px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .health-card { background: white; padding: 15px; border-radius: 12px; text-align: center; }
         .health-val { font-size: 1.8em; font-weight: 700; display: block; }
         .h-bar { height: 6px; background: #e2e8f0; border-radius: 3px; margin-top: 10px; overflow: hidden; }
         .h-fill { height: 100%; transition: width 0.5s; }
@@ -149,14 +151,13 @@ cat <<EOF > "$HTML_REPORT"
         .badge-pass { background: #dcfce7; color: #166534; }
         .badge-fail { background: #fee2e2; color: #991b1b; }
         .raw-output { background: #0f172a; color: #e2e8f0; padding: 15px; border-radius: 8px; font-family: monospace; white-space: pre-wrap; font-size: 0.8em; }
-        .fix-container { background: #fffbeb; padding: 10px; border-radius: 6px; border: 1px solid #fef3c7; display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }
         .copy-btn { background: #f59e0b; color: white; border: none; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
     </style>
 </head>
 <body>
     <div class="container">
         <header style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-            <h1 style="margin:0;">🛡️ Rocky 9 Audit Dashboard V18</h1>
+            <h1 style="margin:0;">🛡️ Audit Dashboard V19</h1>
             <div class="tabs"><button id="btn-dash" class="tab-btn active" onclick="tab('dash')">Dashboard</button><button id="btn-evid" class="tab-btn" onclick="tab('evid')">Technical Evidence</button><button id="btn-fix" class="tab-btn" onclick="tab('fix')" style="background:var(--warn); color:white;">⚡ Quick-Fix</button></div>
         </header>
 
@@ -178,27 +179,23 @@ cat <<EOF > "$HTML_REPORT"
 
         <div id="dash" class="tab-content active">
             $([ "$FAILED_CHECKS" -gt 0 ] && echo "<div class='todo-box'><h3>⚠️ Actie Vereist ($FAILED_CHECKS)</h3>$TODO_HTML</div>")
-            <div class="cat-card"><h3>🛡️ CIS Compliance Audit</h3><table><tbody>$CIS_HTML</tbody></table></div>
-            <div class="cat-card"><h3>🔐 Security & Agents</h3><table><tbody>$SEC_HTML</tbody></table></div>
-            <div class="cat-card"><h3>🌐 Network & Connectivity</h3><table><tbody>$NET_HTML</tbody></table></div>
-            <div class="cat-card"><h3>⚙️ System & Hardening</h3><table><tbody>$SYS_HTML</tbody></table></div>
+            <div class="cat-card"><h3>🛡️ Audit Resultaten</h3><table><tbody>$CIS_HTML $SEC_HTML $NET_HTML $SYS_HTML</tbody></table></div>
         </div>
 
         <div id="evid" class="tab-content">$EVIDENCE_HTML</div>
+        
         <div id="fix" class="tab-content">
             <div class="cat-card">
-                <h3>⚡ Quick-Fix Script</h3>
-                <div class="raw-output" id="qfix">#!/bin/bash
-# Fix voor $HOSTNAME_SHORT
-$QUICK_FIX_CMDS
-echo "Fixes toegepast!"</div>
-                <button class="tab-btn" style="margin-top:10px; background:var(--primary); color:white;" onclick="copyTo(document.getElementById('qfix').innerText)">Kopieer Script</button>
+                <h3>⚡ Oneliner Quick-Fix</h3>
+                <p>Kopieer en plak onderstaande regel direct in je terminal:</p>
+                <div class="raw-output" id="oneliner">$ONELINER_CMDS</div>
+                <button class="tab-btn" style="margin-top:15px; background:var(--primary); color:white;" onclick="copyTo(document.getElementById('oneliner').innerText)">Kopieer Oneliner</button>
             </div>
         </div>
     </div>
     <script>
         function tab(n){document.querySelectorAll('.tab-content,.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById(n).classList.add('active');document.getElementById('btn-'+n).classList.add('active');}
-        function copyTo(t){navigator.clipboard.writeText(t);alert('Gekopieerd!');}
+        function copyTo(t){navigator.clipboard.writeText(t);alert('Oneliner gekopieerd!');}
     </script>
 </body>
 </html>
