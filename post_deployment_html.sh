@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# POST-DEPLOYMENT VERIFICATIE DASHBOARD V24 - FOUR CATEGORY SPLIT
+# POST-DEPLOYMENT VERIFICATIE DASHBOARD V25 - REDIRECTION FIX & 4-BOX UI
 # ==============================================================================
 
 # Kleuren voor terminal
@@ -28,12 +28,12 @@ TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
 HOSTNAME_SHORT=$(hostname -s)
 HTML_REPORT="report_${HOSTNAME_SHORT}_${TIMESTAMP}.html"
 
-# Variabelen voor HTML (Nu 4 aparte secties)
+# Variabelen voor HTML (4 aparte secties behouden conform image_84d9a1.png)
 CIS_HTML=""; SEC_HTML=""; NET_HTML=""; SYS_HTML=""; TODO_HTML=""; EVIDENCE_HTML=""; ONELINER_CMDS=""
 TOTAL_CHECKS=0; PASSED_CHECKS=0; FAILED_CHECKS=0
 SEC_P=0; SEC_T=0; NET_P=0; NET_T=0; SYS_P=0; SYS_T=0; CIS_P=0; CIS_T=0
 
-# --- LOG FUNCTIE (Terminal detail + 4-weg Splitsing) ---
+# --- LOG FUNCTIE (Terminal detail + Oneliner fix) ---
 log_check() {
     local category=$1; local name=$2; local status=$3; local msg=$4; local fix=$5; local raw_out=$6
     ((TOTAL_CHECKS++))
@@ -56,7 +56,6 @@ log_check() {
 
     local ROW="<tr class='$H_ROW'><td>$name</td><td style='width:80px'>$H_S</td><td>$msg $H_FIX</td></tr>"
     
-    # Strikte categorisering in 4 boxen
     case $category in
         "CIS")      CIS_HTML+="$ROW"; ((CIS_T++)); [ "$status" == "OK" ] && ((CIS_P++)) ;;
         "Security") SEC_HTML+="$ROW"; ((SEC_T++)); [ "$status" == "OK" ] && ((SEC_P++)) ;;
@@ -71,9 +70,12 @@ echo -e "========================================================\nSTART AUDIT: 
 # --- 1. CIS COMPLIANCE ---
 echo -e "\n--- Running CIS Compliance Audit ---"
 SSH_ROOT=$(sshd -T 2>/dev/null | grep -i "permitrootlogin" | awk '{print $2}')
-log_check "CIS" "SSH Root Login" "$([ "$SSH_ROOT" == "no" ] && echo "OK" || echo "FAIL")" "Root login: $SSH_ROOT" "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && sudo systemctl restart sshd" "$(sshd -T 2>/dev/null | grep -i permitroot)"
+log_check "CIS" "SSH Root Login" "$([ "$SSH_ROOT" == "no" ] && echo "OK" || echo "FAIL")" "Status: $SSH_ROOT" "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && sudo systemctl restart sshd" "$(sshd -T 2>/dev/null | grep -i permitroot)"
+
+# De audit rules fix gebruikt nu tee om permission denied te voorkomen
 RAW_AUDIT=$(auditctl -l 2>/dev/null)
-log_check "CIS" "Audit Rules" "$(echo "$RAW_AUDIT" | grep -q "identity" && echo "OK" || echo "FAIL")" "Rules check" "sudo echo '-w /etc/passwd -p wa -k identity' >> /etc/audit/rules.d/audit.rules && sudo augenrules --load" "$RAW_AUDIT"
+AUDIT_FIX="echo '-w /etc/passwd -p wa -k identity' | sudo tee -a /etc/audit/rules.d/audit.rules > /dev/null && echo '-w /etc/shadow -p wa -k identity' | sudo tee -a /etc/audit/rules.d/audit.rules > /dev/null && sudo augenrules --load"
+log_check "CIS" "Audit Rules" "$(echo "$RAW_AUDIT" | grep -q "identity" && echo "OK" || echo "FAIL")" "Rules check" "$AUDIT_FIX" "$RAW_AUDIT"
 log_check "CIS" "Perms /etc/shadow" "$([ "$(stat -c "%a" /etc/shadow 2>/dev/null)" == "0" ] && echo "OK" || echo "FAIL")" "Status: $(stat -c "%a" /etc/shadow 2>/dev/null)" "sudo chmod 000 /etc/shadow" "$(ls -l /etc/shadow)"
 
 # --- 2. SECURITY & AGENTS ---
@@ -129,11 +131,10 @@ cat <<EOF > "$HTML_REPORT"
         .cat-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; color: var(--primary); font-weight: 700; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px; }
         table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
         td { padding: 12px; border-bottom: 1px solid #f8fafc; vertical-align: top; }
-        .badge { padding: 3px 8px; border-radius: 5px; font-size: 0.75em; font-weight: 700; }
+        .badge { padding: 3px 10px; border-radius: 6px; font-size: 0.75em; font-weight: 700; }
         .badge-pass { background: #dcfce7; color: #166534; }
         .badge-fail { background: #fee2e2; color: #991b1b; }
         .raw-output { background: #0f172a; color: #e2e8f0; padding: 15px; border-radius: 8px; font-family: monospace; white-space: pre-wrap; font-size: 0.8em; }
-        .fix-container { background: #fffbeb; padding: 10px; border-radius: 6px; border: 1px solid #fef3c7; display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }
         .copy-btn { background: #f59e0b; color: white; border: none; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
     </style>
 </head>
@@ -144,7 +145,7 @@ cat <<EOF > "$HTML_REPORT"
             <div class="tabs">
                 <button id="btn-dash" class="tab-btn active" onclick="tab('dash')">Dashboard</button>
                 <button id="btn-evid" class="tab-btn" onclick="tab('evid')">Technical Evidence</button>
-                <button id="btn-fix" class="tab-btn" onclick="tab('fix')" style="background:var(--warn); color:white;">⚡ Quick-Fix</button>
+                <button id="btn-fix" class="tab-btn" onclick="tab('fix')" style="background:var(--warn); color:white;">⚡ Oneliner Quick-Fix</button>
             </div>
         </header>
 
@@ -178,7 +179,7 @@ cat <<EOF > "$HTML_REPORT"
         <div id="fix" class="tab-content">
             <div class="cat-card">
                 <h3>⚡ Oneliner Quick-Fix</h3>
-                <p style="font-size:0.9em; color:#64748b;">Kopieer en plak onderstaande regel in je terminal:</p>
+                <p style="font-size:0.9em; color:#64748b;">Kopieer en plak onderstaande regel in je terminal om alle problemen in één keer op te lossen:</p>
                 <div class="raw-output" id="oneliner-text" style="font-weight:bold; color:var(--warn);">$ONELINER_CMDS</div>
                 <button class="tab-btn" style="margin-top:15px; background:var(--primary); color:white;" onclick="copyTo(document.getElementById('oneliner-text').innerText)">Kopieer Oneliner</button>
             </div>
@@ -192,4 +193,4 @@ cat <<EOF > "$HTML_REPORT"
 </html>
 EOF
 
-echo -e "\n${GREEN}Gereed! Rapport V24 gegenereerd:${NC} $HTML_REPORT"
+echo -e "\n${GREEN}Gereed! Rapport V25 gegenereerd:${NC} $HTML_REPORT"
