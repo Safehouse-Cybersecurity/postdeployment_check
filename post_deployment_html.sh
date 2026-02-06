@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# POST-DEPLOYMENT VERIFICATIE DASHBOARD V9 - INCL. AZURE ARC & CIS EVIDENCE
+# POST-DEPLOYMENT VERIFICATIE DASHBOARD V10 - AZURE ARC FIX & CIS EVIDENCE
 # ==============================================================================
 
 # Kleuren voor terminal
@@ -132,7 +132,7 @@ else
     log_check "Security" "$ADMIN_USER Password" "FAIL" "Gebruiker niet gevonden" "useradd $ADMIN_USER" "User $ADMIN_USER does not exist"
 fi
 
-# Sophos Check
+# Sophos Check (Service based)
 RAW_SOPHOS=$(systemctl status sophos-spl --no-pager 2>&1)
 if systemctl is-active --quiet sophos-spl; then
     log_check "Security" "Sophos MDR" "OK" "sophos-spl service actief (running)" "" "$RAW_SOPHOS"
@@ -140,12 +140,12 @@ else
     log_check "Security" "Sophos MDR" "FAIL" "sophos-spl service niet actief" "systemctl start sophos-spl" "$RAW_SOPHOS"
 fi
 
-# Azure Arc Check (NIEUW)
+# Azure Arc Check (VERBETERD: Kijkt naar status ipv alleen service naam)
 RAW_ARC=$(azcmagent show 2>&1)
-if systemctl is-active --quiet himds; then
-    log_check "Security" "Azure Arc" "OK" "Connected Machine Agent actief" "" "$RAW_ARC"
+if echo "$RAW_ARC" | grep -iq "Agent Status.*: Connected"; then
+    log_check "Security" "Azure Arc" "OK" "Connected Machine Agent verbonden" "" "$RAW_ARC"
 else
-    log_check "Security" "Azure Arc" "FAIL" "Agent service (himds) niet actief" "sudo azcmagent connect" "$RAW_ARC"
+    log_check "Security" "Azure Arc" "FAIL" "Agent niet verbonden" "sudo azcmagent connect" "$RAW_ARC"
 fi
 
 # --- 2. NETWORK ---
